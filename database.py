@@ -1,3 +1,7 @@
+"""
+Database module for managing endpoint data using TOML files.
+"""
+
 # standard library
 import uuid
 import os
@@ -7,12 +11,17 @@ import toml
 
 
 class EndpointDatabase:
+    """
+    Database class for managing endpoint data stored in TOML files.
+    """
+
     def __init__(self):
         self.base_path = "data/"
         if not os.path.exists(self.base_path):
             os.makedirs(self.base_path, exist_ok=True)
 
     def generate_endpoint_id(self):
+        # We should check for collisions in a real implementation
         return str(uuid.uuid4())
 
     def _path_for_id(self, endpoint_id):
@@ -38,20 +47,28 @@ class EndpointDatabase:
 
         return data
 
-    def register_endpoint(self, ip, hostname, osfamily, os_name, last_seen):
-        obj = {
-            "ip": ip,
-            "hostname": hostname,
-            "osfamily": osfamily,
-            "os": os_name,
-            "last_seen": last_seen,
-            "next_expected": "",
-            "tasks": [],
-        }
+    def ensure_non_duplicate(self, new_endpoint_id, new_info):
+        """Returns True if no other endpoint has the same hostname and IP."""
+        nhostname = new_info.get("hostname")
+        nip = new_info.get("ip_address")
 
-        endpoint_id = self.generate_endpoint_id()
-        self.save_endpoint(endpoint_id, obj)
-        return endpoint_id
+        for eid in self.list_endpoints():
+            if eid == new_endpoint_id:
+                continue
+            data = self.get_endpoint(eid)
+            if data is None:
+                continue
+            if data.get("hostname") == nhostname and data.get("ip_address") == nip:
+                return False
+        return True
+
+    def register_endpoint(self, agent_id, info):
+        """Registers a new endpoint if it is not a duplicate.
+        Returns (True, None) on success, (False, reason) on failure."""
+        if not self.ensure_non_duplicate(agent_id, info):
+            return (False, "duplicate endpoint")
+        self.save_endpoint(agent_id, info)
+        return (True, None)
 
     def add_task(self, endpoint_id, task):
         data = self.get_endpoint(endpoint_id)
