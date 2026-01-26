@@ -39,7 +39,7 @@ class EndpointDatabase:
     def endpoint_exists(self, endpoint_id):
         """
         Checks if an endpoint exists by verifying the presence of its TOML file.
-        
+
         :param self: The instance of the class.
         :param endpoint_id: The unique identifier for the endpoint.
         """
@@ -86,7 +86,7 @@ class EndpointDatabase:
     def add_task(self, endpoint_id, task):
         """
         Adds a task to the specified endpoint's task list.
-        
+
         :param self: The instance of the class.
         :param endpoint_id: The unique identifier for the endpoint.
         :param task: The task to be added.
@@ -102,7 +102,7 @@ class EndpointDatabase:
     def post_task_result(self, endpoint_id, task_id, result):
         """
         Posts the result of a task for a specific endpoint.
-        
+
         :param self: The instance of the class.
         :param endpoint_id: The unique identifier for the endpoint.
         :param task_id: The unique identifier for the task.
@@ -125,7 +125,7 @@ class EndpointDatabase:
     def get_tasks_for_endpoint(self, endpoint_id):
         """
         Retrieves the list of tasks for a specific endpoint.
-        
+
         :param self: The instance of the class.
         :param endpoint_id: The unique identifier for the endpoint.
         """
