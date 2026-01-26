@@ -1,0 +1,16 @@
+[project]
+name = "backend"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "flask>=3.1.2",
+    "toml>=0.10.2",
+]
+
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+    "creosote>=4.1.0",
+    "flake8>=7.3.0",
+    "pylint>=4.0.4",
+]
