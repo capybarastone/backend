@@ -21,28 +21,41 @@ class EndpointDatabase:
             os.makedirs(self.base_path, exist_ok=True)
 
     def generate_endpoint_id(self):
+        """
+        Generates a unique endpoint ID using UUID4.
+        """
         # We should check for collisions in a real implementation
         return str(uuid.uuid4())
 
     def _path_for_id(self, endpoint_id):
+        """Returns the file path for a given endpoint ID."""
         return os.path.join(self.base_path, f"{str(endpoint_id)}.toml")
 
     def save_endpoint(self, endpoint_id, data):
-        with open(self._path_for_id(endpoint_id), "w") as f:
+        """Saves endpoint data to a TOML file."""
+        with open(self._path_for_id(endpoint_id), "w", encoding="utf-8") as f:
             f.write(toml.dumps(data))
 
     def endpoint_exists(self, endpoint_id):
+        """
+        Checks if an endpoint exists by verifying the presence of its TOML file.
+        
+        :param self: The instance of the class.
+        :param endpoint_id: The unique identifier for the endpoint.
+        """
         return os.path.exists(self._path_for_id(endpoint_id))
 
     def list_endpoints(self):
+        """Lists all registered endpoint IDs."""
         all_files = os.listdir(self.base_path)
         return [f.replace(".toml", "") for f in all_files if f.endswith(".toml")]
 
     def get_endpoint(self, endpoint_id):
+        """Retrieves endpoint data from its TOML file."""
         if not self.endpoint_exists(endpoint_id):
             return None
 
-        with open(self._path_for_id(endpoint_id), "r") as f:
+        with open(self._path_for_id(endpoint_id), "r", encoding="utf-8") as f:
             data = toml.load(f)
 
         return data
@@ -71,6 +84,13 @@ class EndpointDatabase:
         return (True, None)
 
     def add_task(self, endpoint_id, task):
+        """
+        Adds a task to the specified endpoint's task list.
+        
+        :param self: The instance of the class.
+        :param endpoint_id: The unique identifier for the endpoint.
+        :param task: The task to be added.
+        """
         data = self.get_endpoint(endpoint_id)
         if data is None:
             return False
@@ -80,6 +100,14 @@ class EndpointDatabase:
         return True
 
     def post_task_result(self, endpoint_id, task_id, result):
+        """
+        Posts the result of a task for a specific endpoint.
+        
+        :param self: The instance of the class.
+        :param endpoint_id: The unique identifier for the endpoint.
+        :param task_id: The unique identifier for the task.
+        :param result: The result of the task.
+        """
         data = self.get_endpoint(endpoint_id)
         if data is None:
             return False
@@ -95,6 +123,12 @@ class EndpointDatabase:
         return True
 
     def get_tasks_for_endpoint(self, endpoint_id):
+        """
+        Retrieves the list of tasks for a specific endpoint.
+        
+        :param self: The instance of the class.
+        :param endpoint_id: The unique identifier for the endpoint.
+        """
         data = self.get_endpoint(endpoint_id)
         if data is None:
             return None
@@ -104,14 +138,14 @@ class EndpointDatabase:
 # Basic tests
 if __name__ == "__main__":
     e = EndpointDatabase()
-    eid = e.register_endpoint(
+    sample_agent_id = e.register_endpoint(
         input("IP: "),
         input("Hostname: "),
         input("OS Type: "),
         input("OS: "),
         input("Last seen: "),
     )
-    print("Registered ID:", eid)
-    e.add_task(eid, {"id": "task1", "command": "ls"})
-    tasks = e.get_tasks_for_endpoint(eid)
+    print("Registered ID:", sample_agent_id)
+    e.add_task(sample_agent_id, {"id": "task1", "command": "ls"})
+    tasks = e.get_tasks_for_endpoint(sample_agent_id)
     print("Tasks for endpoint:", tasks)

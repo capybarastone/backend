@@ -2,14 +2,13 @@
 Backend flask app for handling endpoint check-ins and task results.
 """
 
-import logging
-import sys
 from datetime import datetime, UTC
 
-from flask import Flask, request, jsonify
+from flask import request, jsonify
+from apiflask import APIFlask
 from database import EndpointDatabase
 
-app = Flask(__name__)
+app = APIFlask(__name__)
 
 db = EndpointDatabase()
 
@@ -22,19 +21,34 @@ def get_current_timestamp():
     return current_utc_aware.isoformat().replace("+00:00", "Z")
 
 
-@app.route("/")
-def index():
-    """
-    Docstring for index
-    """
-    # TODO: check user agent and tell browsers to get bent
-    return ("you're a human. go away. this is an api", 400)
-
-
-@app.route("/api/checkin", methods=["POST"])
+@app.post("/api/checkin")
 def checkin():
-    """
-    Docstring for checkin
+    """Check in an endpoint and retrieve any queued tasks.
+    ---
+    summary: Endpoint check-in
+    description: Use this endpoint to update the endpoint heartbeat and fetch pending tasks.
+    parameters:
+      - in: query
+        name: agentid
+        description: Unique identifier for the endpoint.
+        required: true
+        schema:
+          type: string
+    responses:
+      200:
+        description: A JSON array of tasks assigned to the endpoint.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+      204:
+        description: No tasks are available for the endpoint.
+      400:
+        description: The required agent ID was not provided.
+      404:
+        description: The supplied agent ID does not exist.
     """
     agentid = request.args.get("agentid")
     if agentid is None:
@@ -51,14 +65,39 @@ def checkin():
 
     if db.get_tasks_for_endpoint(agentid):
         return jsonify(db.get_tasks_for_endpoint(agentid))
-    else:
-        return ("no tasks", 204)
+    return ("no tasks", 204)
 
 
-@app.route("/api/post_result", methods=["POST"])
+@app.post("/api/post_result")
 def post_result():
-    """
-    Docstring for post_result
+    """Submit the outcome of a task that has been executed by an endpoint.
+    ---
+    summary: Submit task result
+    description: Provide the task result payload for a task that has been executed by the endpoint.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              agentid:
+                type: string
+                description: Unique identifier for the endpoint that completed the task.
+              task_id:
+                type: string
+                description: Unique identifier for the task being reported.
+              result:
+                description: Arbitrary JSON payload containing the task execution result.
+            required:
+              - agentid
+              - task_id
+              - result
+    responses:
+      200:
+        description: The task result was stored successfully.
+      400:
+        description: Missing parameters or failure persisting the result.
     """
     data = request.json
     agentid = data.get("agentid")
@@ -75,10 +114,33 @@ def post_result():
     return ("result posted", 200)
 
 
-@app.route("/api/register", methods=["POST"])
+@app.post("/api/register")
 def register_endpoint():
-    """
-    Docstring for register_endpoint
+    """Register a new endpoint and obtain its assigned agent identifier.
+    ---
+    summary: Register endpoint
+    description: Submit endpoint metadata to register the endpoint and receive an agent identifier for future requests.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+            description: Endpoint metadata such as hostname, operating system, or other identifying attributes.
+    responses:
+      200:
+        description: Registration was successful and an agent identifier is returned.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent_id:
+                  type: string
+                  description: Unique identifier assigned to the endpoint.
+      400:
+        description: Missing payload data or duplicate registration prevented completion.
     """
     info = request.json
 
