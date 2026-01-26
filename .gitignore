@@ -4,3 +4,4 @@ bin/
 certs/
 .venv
 data/
+__pycache__/
