@@ -2,26 +2,19 @@
 Backend flask app for handling endpoint check-ins and task results.
 """
 
-from datetime import datetime, UTC
-
 from flask import request, jsonify
 from apiflask import APIFlask
-from database import EndpointDatabase
+
+from database import EndpointDatabase, generate_endpoint_id
+from util import get_current_timestamp
 
 app = APIFlask(__name__)
 
 db = EndpointDatabase()
 
 
-def get_current_timestamp():
-    """
-    Returns current UTC time in ISO format with Z suffix.
-    """
-    current_utc_aware = datetime.now(UTC)
-    return current_utc_aware.isoformat().replace("+00:00", "Z")
-
-
-@app.post("/api/checkin")
+# START ENDPOINT ROUTES
+@app.post("/api/end/checkin")
 def checkin():
     """Check in an endpoint and retrieve any queued tasks.
     ---
@@ -52,12 +45,12 @@ def checkin():
     """
     agentid = request.args.get("agentid")
     if agentid is None:
-        return ("agentid query parameter required", 400)
+        return "agentid query parameter required", 400
 
     endpoint = db.get_endpoint(agentid)
 
     if endpoint is None:
-        return ("unknown agentid", 404)
+        return "unknown agentid", 404
 
     last_seen = get_current_timestamp()
     endpoint["last_seen"] = last_seen
@@ -65,10 +58,10 @@ def checkin():
 
     if db.get_tasks_for_endpoint(agentid):
         return jsonify(db.get_tasks_for_endpoint(agentid))
-    return ("no tasks", 204)
+    return "no tasks", 204
 
 
-@app.post("/api/post_result")
+@app.post("/api/end/post_result")
 def post_result():
     """Submit the outcome of a task that has been executed by an endpoint.
     ---
@@ -105,21 +98,21 @@ def post_result():
     result = data.get("result")
 
     if not agentid or not task_id or result is None:
-        return ("missing parameters", 400)
+        return "missing parameters", 400
 
     success = db.post_task_result(agentid, task_id, result)
     if not success:
-        return ("failed to post result", 400)
+        return "failed to post result", 400
 
-    return ("result posted", 200)
+    return "result posted", 200
 
 
-@app.post("/api/register")
+@app.post("/api/end/register")
 def register_endpoint():
     """Register a new endpoint and obtain its assigned agent identifier.
     ---
     summary: Register endpoint
-    description: Submit endpoint metadata to register the endpoint and receive an agent identifier for future requests.
+    description: Submit endpoint metadata to register the endpoint and receive an agent id.
     requestBody:
       required: true
       content:
@@ -127,7 +120,7 @@ def register_endpoint():
           schema:
             type: object
             additionalProperties: true
-            description: Endpoint metadata such as hostname, operating system, or other identifying attributes.
+            description: Endpoint metadata: hostname, operating system, etc.
     responses:
       200:
         description: Registration was successful and an agent identifier is returned.
@@ -142,30 +135,56 @@ def register_endpoint():
       400:
         description: Missing payload data or duplicate registration prevented completion.
     """
-    info = request.json
+    payload = request.json
+    if not payload:
+        return "missing parameters", 400
 
-    if not info:
-        return ("missing parameters", 400)
+    remote_addr = request.remote_addr
+    now = get_current_timestamp()
 
     app.logger.info(
         "Incoming %s request to %s from %s with payload %s",
         request.method,
         request.path,
-        request.remote_addr,
-        info,
+        remote_addr,
+        payload,
     )
 
-    agentid = db.generate_endpoint_id()
+    agent_id = generate_endpoint_id()
+    payload["ip_address"] = remote_addr
+    payload["registered_at"] = now
+    payload["last_seen"] = now
 
-    info["ip_address"] = request.remote_addr
-    info["registered_at"] = get_current_timestamp()
-    info["last_seen"] = info["registered_at"]
+    if not db.register_endpoint(agent_id, payload):
+        return "failed to register endpoint. probably a duplicate?", 400
 
-    success = db.register_endpoint(agentid, info)
-    if not success:
-        return ("failed to register endpoint. probably a duplicate?", 400)
+    return jsonify({"agent_id": agent_id}), 200
 
-    return (jsonify({"agent_id": agentid}), 200)
+
+# END ENDPOINT ROUTES
+
+
+# START MANAGEMENT ROUTES
+@app.post("/api/man/post_task")
+def post_task():
+    """
+    Create a task for the given agent.
+
+    Expects JSON body with `agentid` and `task`.
+    Returns 200 on success, 400 for missing parameters or add failure,
+    and 404 for unknown agentid.
+    """
+    body = request.json
+    task = body.get("task")
+    if task is None:
+        return "missing parameters", 400
+    endpoint = db.get_endpoint(body["agentid"])
+    if endpoint is None:
+        return "unknown agentid", 404
+    res = db.add_task(body["agentid"], task)
+    if not res:
+        return "failed to add task", 400
+    return "success", 200
 
 
 if __name__ == "__main__":

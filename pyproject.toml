@@ -14,4 +14,5 @@ dev = [
     "creosote>=4.1.0",
     "flake8>=7.3.0",
     "pylint>=4.0.4",
+    "requests>=2.32.5",
 ]
