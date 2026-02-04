@@ -5,6 +5,7 @@ Database module for managing endpoint data using TOML files.
 # standard library
 import uuid
 import os
+from typing import Dict, Any, List, Optional
 
 # pypi
 import toml
@@ -17,11 +18,33 @@ def generate_endpoint_id():
     # We should check for collisions in a real implementation
     return str(uuid.uuid4())
 
-
 class EndpointDatabase:
     """
     Database class for managing endpoint data stored in TOML files.
     """
+
+    _TASK_FIELDS = (
+        "task_id",
+        "assigned_at",
+        "instruction",
+        "arg",
+        "exit_code",
+        "stdout",
+        "stderr",
+        "stopped_processing_at",
+        "responded",
+    )
+
+    _TASK_DEFAULTS: Dict[str, Any] = {
+        "assigned_at": "",
+        "instruction": "",
+        "arg": "",
+        "exit_code": None,
+        "stdout": "",
+        "stderr": "",
+        "stopped_processing_at": "",
+        "responded": False,
+    }
 
     def __init__(self):
         self.base_path = "data/"
@@ -56,9 +79,11 @@ class EndpointDatabase:
 
         if not self.endpoint_exists(endpoint_id):
             return None
-
         with open(self._path_for_id(endpoint_id), "r", encoding="utf-8") as f:
             data = toml.load(f)
+
+        # Normalize task objects so downstream callers always get the expected schema.
+        self._normalize_endpoint_tasks(data)
 
         return data
 
@@ -78,12 +103,16 @@ class EndpointDatabase:
         return True
 
     def register_endpoint(self, agent_id, info):
-        """Registers a new endpoint if it is not a duplicate.
-        Returns (True, None) on success, (False, reason) on failure."""
+        """Registers a new endpoint if it is not a duplicate."""
         if not self.ensure_non_duplicate(agent_id, info):
-            return False, "duplicate endpoint"
+            return False
+
+        # Ensure task list exists in stored data.
+        if "tasks" not in info:
+            info["tasks"] = []
+
         self.save_endpoint(agent_id, info)
-        return True, None
+        return True
 
     def add_task(self, endpoint_id, task):
         """
@@ -98,11 +127,15 @@ class EndpointDatabase:
             return False
         if "tasks" not in data:
             data["tasks"] = []
-        data["tasks"].append(task)
+        try:
+            sanitized_task = self._sanitize_task(task, responded=False)
+        except ValueError:
+            return False
+        data["tasks"].append(sanitized_task)
         self.save_endpoint(endpoint_id, data)
         return True
 
-    def post_task_result(self, endpoint_id, task_id, result):
+    def post_task_result(self, endpoint_id, tdata):
         """
         Posts the result of a task for a specific endpoint.
 
@@ -115,12 +148,29 @@ class EndpointDatabase:
         if data is None:
             return False
 
+        try:
+            sanitized_result = self._sanitize_task(tdata, responded=True)
+        except ValueError:
+            return False
+        task_id = sanitized_result["task_id"]
+
+        updated = False
         for task in data.get("tasks", []):
-            if task.get("id") == task_id:
-                task["result"] = result
+            # Handle legacy tasks that might still use "id" as the identifier.
+            if task.get("task_id") is None and task.get("id") == task_id:
+                task["task_id"] = task.pop("id")
+
+            if task.get("task_id") == task_id:
+                for key, value in sanitized_result.items():
+                    task[key] = value
+                updated = True
                 break
         else:
             return False  # Task ID not found
+
+        # Remove legacy top-level entries that stored task results separately.
+        if isinstance(data.get(task_id), dict):
+            data.pop(task_id, None)
 
         self.save_endpoint(endpoint_id, data)
         return True
@@ -135,7 +185,60 @@ class EndpointDatabase:
         data = self.get_endpoint(endpoint_id)
         if data is None:
             return None
-        return data.get("tasks", [])
+        tasks = data.get("tasks", [])
+        if not isinstance(tasks, list):
+            return []
+        return [task for task in tasks if not task.get("responded", False)]
+
+    def _sanitize_task(self, task: Dict[str, Any], *, responded: Optional[bool] = None) -> Dict[str, Any]:
+        """Return a copy of task data limited to the known task schema."""
+        if not isinstance(task, dict):
+            raise ValueError("task must be a dictionary")
+
+        sanitized: Dict[str, Any] = {}
+        task_id = task.get("task_id") or task.get("id")
+        if not task_id:
+            raise ValueError("task is missing task_id")
+        sanitized["task_id"] = task_id
+
+        for field in self._TASK_FIELDS:
+            if field == "task_id":
+                continue
+            if field in task:
+                sanitized[field] = task[field]
+
+        for field, default in self._TASK_DEFAULTS.items():
+            sanitized.setdefault(field, default)
+
+        if responded is not None:
+            sanitized["responded"] = responded
+
+        return sanitized
+
+    def _normalize_endpoint_tasks(self, data: Dict[str, Any]) -> None:
+        """Ensure every stored task follows the canonical schema."""
+        tasks = data.get("tasks")
+        if not isinstance(tasks, list):
+            data["tasks"] = []
+            return
+
+        normalized: List[Dict[str, Any]] = []
+        seen_task_ids = set()
+        for task in tasks:
+            try:
+                normalized_task = self._sanitize_task(task)
+            except ValueError:
+                # Skip malformed tasks rather than breaking the call chain.
+                continue
+            normalized.append(normalized_task)
+            seen_task_ids.add(normalized_task["task_id"])
+
+        data["tasks"] = normalized
+
+        # Clean up any legacy entries stored outside the tasks list.
+        for task_id in list(seen_task_ids):
+            if isinstance(data.get(task_id), dict):
+                data.pop(task_id, None)
 
 
 # Basic tests

@@ -6,7 +6,7 @@ from flask import request, jsonify
 from apiflask import APIFlask
 
 from database import EndpointDatabase, generate_endpoint_id
-from util import get_current_timestamp
+from util import get_current_timestamp, primitive_log
 
 app = APIFlask(__name__)
 
@@ -74,37 +74,60 @@ def post_result():
           schema:
             type: object
             properties:
-              agentid:
+              agent_id:
                 type: string
                 description: Unique identifier for the endpoint that completed the task.
               task_id:
                 type: string
                 description: Unique identifier for the task being reported.
-              result:
-                description: Arbitrary JSON payload containing the task execution result.
+              assigned_at:
+                type: string
+              instruction:
+                type: string
+              arg:
+                type: string
+              exit_code:
+                type: integer
+              stdout:
+                type: string
+              stderr:
+                type: string
+              stopped_processing_at:
+                type: string
+              responded:
+                type: boolean
             required:
-              - agentid
+              - agent_id
               - task_id
-              - result
     responses:
       200:
         description: The task result was stored successfully.
       400:
         description: Missing parameters or failure persisting the result.
     """
-    data = request.json
-    agentid = data.get("agentid")
-    task_id = data.get("task_id")
-    result = data.get("result")
+    data = request.json or {}
+    agentid = data.pop("agent_id", None) or data.pop("agentid", None)
 
-    if not agentid or not task_id or result is None:
+    if not agentid:
+        primitive_log(
+            "FLASK - Post Results",
+            "Missing agent identifier in post_result payload. Content: " + str(data),
+        )
         return "missing parameters", 400
 
-    success = db.post_task_result(agentid, task_id, result)
+    task_id = data.get("task_id") or data.get("id")
+    if not task_id:
+        primitive_log(
+            "FLASK - Post Results",
+            "Missing task identifier in post_result payload. Content: " + str(data),
+        )
+        return "missing parameters", 400
+
+    success = db.post_task_result(agentid, data)
     if not success:
         return "failed to post result", 400
 
-    return "result posted", 200
+    return jsonify({"status": "result posted"}), 200
 
 
 @app.post("/api/end/register")
