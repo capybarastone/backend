@@ -18,6 +18,7 @@ def generate_endpoint_id():
     # We should check for collisions in a real implementation
     return str(uuid.uuid4())
 
+
 class EndpointDatabase:
     """
     Database class for managing endpoint data stored in TOML files.
@@ -190,7 +191,9 @@ class EndpointDatabase:
             return []
         return [task for task in tasks if not task.get("responded", False)]
 
-    def _sanitize_task(self, task: Dict[str, Any], *, responded: Optional[bool] = None) -> Dict[str, Any]:
+    def _sanitize_task(
+        self, task: Dict[str, Any], *, responded: Optional[bool] = None
+    ) -> Dict[str, Any]:
         """Return a copy of task data limited to the known task schema."""
         if not isinstance(task, dict):
             raise ValueError("task must be a dictionary")

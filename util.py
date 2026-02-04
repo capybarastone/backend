@@ -4,9 +4,11 @@ Place to put random stuff that isn't strictly database related
 
 from datetime import datetime, UTC
 
+
 def primitive_log(who, something):
     with open("db.log", "a+") as f:
         f.write(who + " : " + something + "\n")
+
 
 def get_current_timestamp():
     """
