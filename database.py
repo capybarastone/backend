@@ -24,6 +24,7 @@ class EndpointDatabase:
     Database class for managing endpoint data stored in TOML files.
     """
 
+    # Allowed fields for tasks, other keys will get stripped out when saving task data to ensure a consistent schema.
     _TASK_FIELDS = (
         "task_id",
         "assigned_at",
@@ -34,8 +35,10 @@ class EndpointDatabase:
         "stderr",
         "stopped_processing_at",
         "responded",
+        "inventory",
     )
 
+    # Default values for task fields if they are missing in the input data.+
     _TASK_DEFAULTS: Dict[str, Any] = {
         "assigned_at": "",
         "instruction": "",
@@ -45,6 +48,7 @@ class EndpointDatabase:
         "stderr": "",
         "stopped_processing_at": "",
         "responded": False,
+        "inventory": {},
     }
 
     def __init__(self):
@@ -155,6 +159,9 @@ class EndpointDatabase:
             return False
         task_id = sanitized_result["task_id"]
 
+        provided_fields = set(tdata.keys())
+        provided_fields.discard("task_id")
+
         updated = False
         for task in data.get("tasks", []):
             # Handle legacy tasks that might still use "id" as the identifier.
@@ -163,7 +170,10 @@ class EndpointDatabase:
 
             if task.get("task_id") == task_id:
                 for key, value in sanitized_result.items():
-                    task[key] = value
+                    if key == "task_id":
+                        continue
+                    if key == "responded" or key in provided_fields:
+                        task[key] = value
                 updated = True
                 break
         else:

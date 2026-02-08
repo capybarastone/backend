@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""
-Utility script for injecting ad-hoc debug tasks into the backend.
+"""Utility script for posting management tasks via the REST API.
 
-Example:
+Example (syscall):
     python backend/scripts/register_task_api.py \\
         --agent-id <endpoint uuid> \\
+        --task syscall \\
         --arg "whoami"
+
+Example (inventory):
+    python backend/scripts/register_task_api.py \\
+        --agent-id <endpoint uuid> \\
+        --task inventory
 """
 
 from __future__ import annotations
@@ -33,9 +38,23 @@ def new_task_id() -> str:
 
 
 @dataclass
+class TaskPreset:
+    instruction: str
+    requires_arg: bool
+    default_arg: str | None = None
+
+
+TASK_PRESETS: Dict[str, TaskPreset] = {
+    "syscall": TaskPreset("syscall", True, "ls -la"),
+    "inventory": TaskPreset("inventory", False),
+    "exit": TaskPreset("exit", False),
+}
+
+
+@dataclass
 class TaskBuilder:
     instruction: str
-    arg: str
+    arg: str | None
     task_id: str | None = None
 
     def build(self) -> Dict[str, Any]:
@@ -69,14 +88,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Agent identifier returned by /api/end/register.",
     )
     parser.add_argument(
+        "--task",
+        choices=sorted(TASK_PRESETS.keys()),
+        default="syscall",
+        help="Task template to use when --instruction is omitted (default: %(default)s).",
+    )
+    parser.add_argument(
         "--arg",
-        default="ls -la",
-        help="Command argument for syscall tasks (default: %(default)s).",
+        help="Optional argument for the task. Required when the selected task expects one.",
     )
     parser.add_argument(
         "--instruction",
-        default="syscall",
-        help="Task instruction (default: %(default)s).",
+        help="Override the instruction instead of using a predefined --task template.",
     )
     parser.add_argument(
         "--task-id",
@@ -95,9 +118,24 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
+    if args.instruction:
+        instruction = args.instruction
+        arg = args.arg
+    else:
+        preset = TASK_PRESETS[args.task]
+        if preset.requires_arg:
+            arg = args.arg if args.arg is not None else preset.default_arg
+            if arg is None:
+                parser.error(f"--arg is required when using the {args.task!r} task.")
+        else:
+            if args.arg is not None:
+                parser.error(f"--arg is not supported for the {args.task!r} task.")
+            arg = preset.default_arg
+        instruction = preset.instruction
+
     task_payload = TaskBuilder(
-        instruction=args.instruction,
-        arg=args.arg,
+        instruction=instruction,
+        arg=arg,
         task_id=args.task_id,
     ).build()
 
