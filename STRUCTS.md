@@ -40,4 +40,7 @@ Exit code, stdout, stderr, timestamp at bottom are all set by endpoint when subm
   * Output is in `"inventory"` which is not typically a part of the Task JSON struct
 * TODO: respawn
 
-> **Note:** The backend keeps a strict allowlist of task keys. Core fields above are preserved, but anything new (for example, `"inventory"`) only survives if it is added to that allowlist. When you introduce bespoke keys for a new task type, remember to update the backend sanitizer so the data isn’t dropped.
+### Schema enforcement
+- Clients may omit response-only fields (`exit_code`, `stdout`, `stderr`, `stopped_processing_at`, `responded`, `inventory`) when creating tasks; the backend fills them using `_TASK_DEFAULTS`.
+- `arg` should be an empty string (`""`) when the instruction does not require parameters—`null` will be normalized but may trigger validation warnings.
+- The backend enforces a strict allowlist via `EndpointDatabase._TASK_FIELDS`. Any new fields must be added there (and to `_TASK_DEFAULTS`) or the data will be stripped before persistence.

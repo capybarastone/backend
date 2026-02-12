@@ -36,7 +36,10 @@ class TaskSchema(Schema):
     instruction = String(
         metadata={"description": "Instruction that the endpoint should execute."}
     )
-    arg = String(metadata={"description": "Argument associated with the instruction."})
+    arg = String(
+        allow_none=True,
+        metadata={"description": "Argument associated with the instruction."},
+    )
     exit_code = Integer(
         allow_none=True,
         metadata={"description": "Exit code returned by the task execution."},
@@ -196,12 +199,16 @@ def register_endpoint(payload):
 @app.post("/api/man/post_task")
 @app.input(PostTaskSchema)
 @app.output(StatusSchema, status_code=200, description="Task acceptance confirmation.")
-def post_task(body):
+def post_task(json_data):
     """Create a task for the given agent."""
-    endpoint = db.get_endpoint(body["agentid"])
+    agent_id = json_data["agentid"]
+    task_payload = json_data["task"]
+
+    endpoint = db.get_endpoint(agent_id)
     if endpoint is None:
         return "unknown agentid", 404
-    res = db.add_task(body["agentid"], body["task"])
+
+    res = db.add_task(agent_id, task_payload)
     if not res:
         return "failed to add task", 400
     return {"status": "success"}, 200
