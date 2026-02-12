@@ -303,12 +303,12 @@ def summarize_task_state(task: Mapping[str, Any]) -> tuple[Text, str, str, str]:
         else:
             status = Text(f"Failed ({exit_code})", style="red")
 
-    stdout = task.get("stdout") or ""
+    stdout = task.get("stdout") or str(task.get("inventory")) or ""
     stderr = task.get("stderr") or ""
     if stderr and not stdout:
         stdout = f"[stderr] {stderr}"
 
-    snippet = stdout.replace("\n", " ")[:80]
+    snippet = stdout.replace("\n", " ")#[:80]
     return status, str(exit_code) if exit_code is not None else "-", snippet, stopped_at
 
 
