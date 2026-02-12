@@ -57,13 +57,24 @@ class EndpointDatabase:
             os.makedirs(self.base_path, exist_ok=True)
 
     def _path_for_id(self, endpoint_id):
-        """Returns the file path for a given endpoint ID."""
-        return os.path.join(self.base_path, f"{str(endpoint_id)}")
+        """Returns the canonical TOML file path for a given endpoint ID."""
+        filename = str(endpoint_id)
+        if not filename.endswith(".toml"):
+            filename = f"{filename}.toml"
+        return os.path.join(self.base_path, filename)
+
+    def _legacy_path_for_id(self, endpoint_id):
+        """Returns the legacy file path without the .toml suffix."""
+        return os.path.join(self.base_path, str(endpoint_id))
 
     def save_endpoint(self, endpoint_id, data):
         """Saves endpoint data to a TOML file."""
-        with open(self._path_for_id(endpoint_id), "w", encoding="utf-8") as f:
+        path = self._path_for_id(endpoint_id)
+        with open(path, "w", encoding="utf-8") as f:
             f.write(toml.dumps(data))
+        legacy_path = self._legacy_path_for_id(endpoint_id)
+        if legacy_path != path and os.path.exists(legacy_path):
+            os.remove(legacy_path)
 
     def endpoint_exists(self, endpoint_id):
         """
@@ -72,23 +83,44 @@ class EndpointDatabase:
         :param self: The instance of the class.
         :param endpoint_id: The unique identifier for the endpoint.
         """
-        return os.path.exists(self._path_for_id(endpoint_id))
+        canonical = self._path_for_id(endpoint_id)
+        if os.path.exists(canonical):
+            return True
+        legacy = self._legacy_path_for_id(endpoint_id)
+        return os.path.exists(legacy)
 
     def list_endpoints(self):
         """Lists all registered endpoint IDs."""
         all_files = os.listdir(self.base_path)
-        return [f.replace("", "") for f in all_files if f.endswith("")]
+        endpoints = []
+        for filename in all_files:
+            if filename.endswith(".toml"):
+                endpoints.append(filename[:-5])
+            else:
+                endpoints.append(filename)
+        return endpoints
 
     def get_endpoint(self, endpoint_id):
         """Retrieves endpoint data from its TOML file."""
 
-        if not self.endpoint_exists(endpoint_id):
-            return None
-        with open(self._path_for_id(endpoint_id), "r", encoding="utf-8") as f:
+        canonical = self._path_for_id(endpoint_id)
+        if os.path.exists(canonical):
+            path = canonical
+        else:
+            legacy = self._legacy_path_for_id(endpoint_id)
+            if not os.path.exists(legacy):
+                return None
+            path = legacy
+
+        with open(path, "r", encoding="utf-8") as f:
             data = toml.load(f)
 
         # Normalize task objects so downstream callers always get the expected schema.
         self._normalize_endpoint_tasks(data)
+
+        if path != canonical:
+            # Promote legacy files to the canonical naming scheme.
+            self.save_endpoint(endpoint_id, data)
 
         return data
 

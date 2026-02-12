@@ -109,9 +109,9 @@ class StatusSchema(Schema):
 @app.output(
     TaskSchema(many=True), status_code=200, description="Queued tasks for the endpoint."
 )
-def checkin(query):
+def checkin(query_data):
     """Check in an endpoint and retrieve any queued tasks."""
-    agentid = query["agentid"]
+    agentid = query_data["agentid"]
     endpoint = db.get_endpoint(agentid)
 
     if endpoint is None:
