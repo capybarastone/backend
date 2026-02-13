@@ -168,10 +168,11 @@ def post_result(json_data):
 @app.output(
     RegisterResponseSchema, status_code=200, description="Registration response."
 )
-def register_endpoint(payload):
+def register_endpoint(json_data):
     """Register a new endpoint and obtain its assigned agent identifier."""
     remote_addr = request.remote_addr
     now = get_current_timestamp()
+    payload = dict(json_data)
 
     app.logger.info(
         "Incoming %s request to %s from %s with payload %s",
@@ -181,12 +182,42 @@ def register_endpoint(payload):
         payload,
     )
 
+    hostname = payload.get("hostname")
+    agent_id = None
+
+    if hostname:
+        for existing_id in db.list_endpoints():
+            existing_data = db.get_endpoint(existing_id)
+            if not existing_data:
+                continue
+            if (
+                existing_data.get("hostname") == hostname
+                and existing_data.get("ip_address") == remote_addr
+            ):
+                agent_id = existing_id
+                # Preserve existing record but refresh metadata.
+                existing_data.update(
+                    {
+                        key: value
+                        for key, value in payload.items()
+                        if key != "tasks"
+                    }
+                )
+                existing_data["ip_address"] = remote_addr
+                existing_data["last_seen"] = now
+                existing_data.setdefault("registered_at", now)
+                db.save_endpoint(existing_id, existing_data)
+                break
+
+    if agent_id:
+        return {"agent_id": agent_id}, 200
+
     agent_id = generate_endpoint_id()
     payload["ip_address"] = remote_addr
     payload["registered_at"] = now
     payload["last_seen"] = now
 
-    if not db.register_endpoint(agent_id, dict(payload)):
+    if not db.register_endpoint(agent_id, payload):
         return "failed to register endpoint. probably a duplicate?", 400
 
     return {"agent_id": agent_id}, 200
