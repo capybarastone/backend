@@ -197,11 +197,7 @@ def register_endpoint(json_data):
                 agent_id = existing_id
                 # Preserve existing record but refresh metadata.
                 existing_data.update(
-                    {
-                        key: value
-                        for key, value in payload.items()
-                        if key != "tasks"
-                    }
+                    {key: value for key, value in payload.items() if key != "tasks"}
                 )
                 existing_data["ip_address"] = remote_addr
                 existing_data["last_seen"] = now
