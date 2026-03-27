@@ -43,7 +43,9 @@ OPERATOR_CERT_PATH = os.path.join(CERTS_DIR, "operator.crt")
 OPERATOR_KEY_PATH = os.path.join(CERTS_DIR, "operator.key")
 
 # Cron config
-CRON_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cron.toml")
+CRON_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "data", "cron.toml"
+)
 CRON_MIN_INTERVAL = 5
 CRON_DEFAULT_INTERVAL = 30
 
@@ -305,7 +307,10 @@ class MTLSRequestHandler(WSGIRequestHandler):
 
 def _load_cron_config():
     """Return the persisted cron config as a dict, falling back to defaults."""
-    defaults = {"inventory_interval": CRON_DEFAULT_INTERVAL, "page_refresh_interval": 10}
+    defaults = {
+        "inventory_interval": CRON_DEFAULT_INTERVAL,
+        "page_refresh_interval": 10,
+    }
     if os.path.exists(CRON_CONFIG_PATH):
         try:
             data = toml.load(CRON_CONFIG_PATH)
@@ -319,10 +324,14 @@ def _save_cron_config(interval, page_refresh_interval):
     """Persist the cron config to disk."""
     os.makedirs(os.path.dirname(CRON_CONFIG_PATH), exist_ok=True)
     with open(CRON_CONFIG_PATH, "w") as f:
-        f.write(toml.dumps({
-            "inventory_interval": interval,
-            "page_refresh_interval": page_refresh_interval,
-        }))
+        f.write(
+            toml.dumps(
+                {
+                    "inventory_interval": interval,
+                    "page_refresh_interval": page_refresh_interval,
+                }
+            )
+        )
 
 
 def _cron_worker():
@@ -628,16 +637,22 @@ def post_task(json_data):
 class CronConfigSchema(Schema):
     inventory_interval = Integer(
         required=True,
-        metadata={"description": "Seconds between automatic inventory tasks per agent."},
+        metadata={
+            "description": "Seconds between automatic inventory tasks per agent."
+        },
     )
     page_refresh_interval = Integer(
         load_default=0,
-        metadata={"description": "Seconds between automatic page refreshes in the UI. 0 = disabled."},
+        metadata={
+            "description": "Seconds between automatic page refreshes in the UI. 0 = disabled."
+        },
     )
 
 
 @app.get("/api/man/cron")
-@app.output(CronConfigSchema, status_code=200, description="Current cron configuration.")
+@app.output(
+    CronConfigSchema, status_code=200, description="Current cron configuration."
+)
 def get_cron():
     """Return the current cron configuration."""
     with _cron_lock:
@@ -649,7 +664,9 @@ def get_cron():
 
 @app.patch("/api/man/cron")
 @app.input(CronConfigSchema)
-@app.output(CronConfigSchema, status_code=200, description="Updated cron configuration.")
+@app.output(
+    CronConfigSchema, status_code=200, description="Updated cron configuration."
+)
 def update_cron(json_data):
     """Update the cron configuration and persist it to disk."""
     inv = json_data.get("inventory_interval", 0)
