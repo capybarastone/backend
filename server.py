@@ -10,8 +10,11 @@ import logging
 import os
 import ssl
 import threading
+import time
+import uuid
 
 # pypi
+import toml
 from apiflask import APIFlask, Schema
 from apiflask.fields import String, Integer, Boolean, Dict, Raw
 from cryptography import x509
@@ -38,6 +41,14 @@ SERVER_CERT_PATH = os.path.join(CERTS_DIR, "server.crt")
 SERVER_KEY_PATH = os.path.join(CERTS_DIR, "server.key")
 OPERATOR_CERT_PATH = os.path.join(CERTS_DIR, "operator.crt")
 OPERATOR_KEY_PATH = os.path.join(CERTS_DIR, "operator.key")
+
+# Cron config
+CRON_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "cron.toml")
+CRON_MIN_INTERVAL = 5
+CRON_DEFAULT_INTERVAL = 30
+
+_cron_state = {"interval": CRON_DEFAULT_INTERVAL, "page_refresh_interval": 10}
+_cron_lock = threading.Lock()
 
 # Populated at startup by ensure_ca_exists()
 _ca_cert = None
@@ -116,12 +127,48 @@ def ensure_ca_exists():
     return ca_cert, ca_key
 
 
+def _parse_server_sans():
+    """
+    Build the SAN list for the server cert from environment variables.
+
+    SERVER_IPS   — comma-separated extra IPv4/IPv6 addresses (e.g. "192.168.1.50,10.0.0.1")
+    SERVER_HOSTS — comma-separated extra DNS names      (e.g. "rmm.example.com,rmm.lan")
+
+    127.0.0.1 and localhost are always included.
+    """
+    sans = [
+        x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+        x509.DNSName("localhost"),
+    ]
+    for raw in os.environ.get("SERVER_IPS", "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            sans.append(x509.IPAddress(ipaddress.ip_address(raw)))
+            log.info("Server cert SAN: IP %s", raw)
+        except ValueError:
+            log.warning("SERVER_IPS: skipping invalid address %r", raw)
+    for raw in os.environ.get("SERVER_HOSTS", "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        sans.append(x509.DNSName(raw))
+        log.info("Server cert SAN: DNS %s", raw)
+    return sans
+
+
 def ensure_server_cert_exists(ca_cert, ca_key):
-    """Create the server cert signed by our CA if it doesn't already exist."""
+    """Create the server cert signed by our CA if it doesn't already exist.
+
+    To add new IPs/hostnames, delete certs/server.crt and certs/server.key,
+    set SERVER_IPS and/or SERVER_HOSTS, then restart — the cert will regenerate.
+    """
     if os.path.exists(SERVER_CERT_PATH) and os.path.exists(SERVER_KEY_PATH):
         return
 
-    log.info("Generating server cert/key...")
+    sans = _parse_server_sans()
+    log.info("Generating server cert/key with %d SAN(s)...", len(sans))
     server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     server_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "rmm-server")])
     cert = (
@@ -143,15 +190,7 @@ def ensure_server_cert_exists(ca_cert, ca_key):
             x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
             critical=False,
         )
-        .add_extension(
-            x509.SubjectAlternativeName(
-                [
-                    x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
-                    x509.DNSName("localhost"),
-                ]
-            ),
-            critical=False,
-        )
+        .add_extension(x509.SubjectAlternativeName(sans), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
 
@@ -257,6 +296,67 @@ class MTLSRequestHandler(WSGIRequestHandler):
             if peer_der:
                 environ["SSL_CLIENT_CERT_DER"] = peer_der
         return environ
+
+
+# ---------------------------------------------------------------------------
+# Cron helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_cron_config():
+    """Return the persisted cron config as a dict, falling back to defaults."""
+    defaults = {"inventory_interval": CRON_DEFAULT_INTERVAL, "page_refresh_interval": 10}
+    if os.path.exists(CRON_CONFIG_PATH):
+        try:
+            data = toml.load(CRON_CONFIG_PATH)
+            return {**defaults, **{k: int(v) for k, v in data.items() if k in defaults}}
+        except Exception:
+            pass
+    return defaults
+
+
+def _save_cron_config(interval, page_refresh_interval):
+    """Persist the cron config to disk."""
+    os.makedirs(os.path.dirname(CRON_CONFIG_PATH), exist_ok=True)
+    with open(CRON_CONFIG_PATH, "w") as f:
+        f.write(toml.dumps({
+            "inventory_interval": interval,
+            "page_refresh_interval": page_refresh_interval,
+        }))
+
+
+def _cron_worker():
+    """
+    Background thread: dispatches inventory tasks to all active (non-blacklisted)
+    agents on a configurable interval.  Skips agents that already have a pending
+    (not yet responded) inventory task so we never pile them up.
+    """
+    while True:
+        with _cron_lock:
+            interval = _cron_state["interval"]
+
+        try:
+            for agent_id in db.list_endpoints():
+                data = db.get_endpoint(agent_id)
+                if not data or data.get("blacklisted"):
+                    continue
+                has_pending = any(
+                    t.get("instruction") == "inventory" and not t.get("responded")
+                    for t in data.get("tasks", [])
+                )
+                if not has_pending:
+                    task = {
+                        "task_id": str(uuid.uuid4()),
+                        "assigned_at": get_current_timestamp(),
+                        "instruction": "inventory",
+                        "arg": None,
+                    }
+                    db.add_task(agent_id, task)
+                    log.debug("Cron: queued inventory for agent %s", agent_id)
+        except Exception:
+            log.exception("Cron worker encountered an error")
+
+        time.sleep(interval)
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +625,67 @@ def post_task(json_data):
     return {"status": "success"}, 200
 
 
+class CronConfigSchema(Schema):
+    inventory_interval = Integer(
+        required=True,
+        metadata={"description": "Seconds between automatic inventory tasks per agent."},
+    )
+    page_refresh_interval = Integer(
+        load_default=0,
+        metadata={"description": "Seconds between automatic page refreshes in the UI. 0 = disabled."},
+    )
+
+
+@app.get("/api/man/cron")
+@app.output(CronConfigSchema, status_code=200, description="Current cron configuration.")
+def get_cron():
+    """Return the current cron configuration."""
+    with _cron_lock:
+        return {
+            "inventory_interval": _cron_state["interval"],
+            "page_refresh_interval": _cron_state["page_refresh_interval"],
+        }, 200
+
+
+@app.patch("/api/man/cron")
+@app.input(CronConfigSchema)
+@app.output(CronConfigSchema, status_code=200, description="Updated cron configuration.")
+def update_cron(json_data):
+    """Update the cron configuration and persist it to disk."""
+    inv = json_data.get("inventory_interval", 0)
+    refresh = json_data.get("page_refresh_interval", 0)
+    if inv < CRON_MIN_INTERVAL:
+        return f"inventory_interval must be >= {CRON_MIN_INTERVAL} seconds", 400
+    if refresh != 0 and refresh < 3:
+        return "page_refresh_interval must be 0 (disabled) or >= 3 seconds", 400
+    with _cron_lock:
+        _cron_state["interval"] = inv
+        _cron_state["page_refresh_interval"] = refresh
+    _save_cron_config(inv, refresh)
+    log.info("Cron updated: inventory=%ds page_refresh=%ds", inv, refresh)
+    return {"inventory_interval": inv, "page_refresh_interval": refresh}, 200
+
+
+@app.get("/api/man/agents")
+def list_agents():
+    """List all registered agents with their metadata."""
+    result = []
+    for eid in db.list_endpoints():
+        data = db.get_endpoint(eid)
+        if data is not None:
+            result.append({"id": eid, **data})
+    return jsonify(result), 200
+
+
+@app.get("/api/man/agents/<agent_id>")
+def get_agent(agent_id):
+    """Get a single agent including full task history."""
+    data = db.get_endpoint(agent_id)
+    if data is None:
+        return jsonify({"error": "unknown agent"}), 404
+    return jsonify({"id": agent_id, **data}), 200
+
+
 # END MANAGEMENT ROUTES
 
 
@@ -610,6 +771,14 @@ if __name__ == "__main__":
     _ca_cert, _ca_key = ensure_ca_exists()
     ensure_server_cert_exists(_ca_cert, _ca_key)
     ensure_operator_cert_exists(_ca_cert, _ca_key)
+
+    # Load persisted cron config and start the background worker
+    saved = _load_cron_config()
+    with _cron_lock:
+        _cron_state["interval"] = saved["inventory_interval"]
+        _cron_state["page_refresh_interval"] = saved["page_refresh_interval"]
+    threading.Thread(target=_cron_worker, daemon=True).start()
+    log.info("Cron worker started (inventory interval: %ds)", _cron_state["interval"])
 
     ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_ctx.load_cert_chain(SERVER_CERT_PATH, SERVER_KEY_PATH)
