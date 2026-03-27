@@ -58,7 +58,10 @@ from database import EndpointDatabase
 console = Console()
 
 
-DEFAULT_MANAGEMENT_URL = "http://127.0.0.1:8443/api/man/post_task"
+DEFAULT_MANAGEMENT_URL = "https://127.0.0.1:8443/api/man/post_task"
+DEFAULT_CERT = str(PROJECT_ROOT / "certs" / "operator.crt")
+DEFAULT_KEY = str(PROJECT_ROOT / "certs" / "operator.key")
+DEFAULT_CA_CERT = str(PROJECT_ROOT / "certs" / "ca.crt")
 
 
 def current_timestamp() -> str:
@@ -101,9 +104,16 @@ class TaskBuilder:
         return payload
 
 
-def post_task(url: str, agent_id: str, task_payload: Dict[str, Any]) -> Response:
+def post_task(
+    url: str,
+    agent_id: str,
+    task_payload: Dict[str, Any],
+    *,
+    cert: tuple[str, str],
+    ca_cert: str,
+) -> Response:
     body = {"agentid": agent_id, "task": task_payload}
-    return requests.post(url, json=body, timeout=15)
+    return requests.post(url, json=body, timeout=15, cert=cert, verify=ca_cert)
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
@@ -153,6 +163,22 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         "--no-monitor",
         action="store_true",
         help="Skip live monitoring of assigned tasks.",
+    )
+    parser.add_argument(
+        "--cert",
+        default=DEFAULT_CERT,
+        help=f"Path to the operator client certificate (default: {DEFAULT_CERT}).",
+    )
+    parser.add_argument(
+        "--key",
+        default=DEFAULT_KEY,
+        help=f"Path to the operator client key (default: {DEFAULT_KEY}).",
+    )
+    parser.add_argument(
+        "--ca-cert",
+        default=DEFAULT_CA_CERT,
+        dest="ca_cert",
+        help=f"Path to the CA certificate for server verification (default: {DEFAULT_CA_CERT}).",
     )
     return parser.parse_args(argv)
 
@@ -249,6 +275,8 @@ def dispatch_tasks(
     *,
     url: str,
     print_payload: bool,
+    cert: tuple[str, str],
+    ca_cert: str,
 ) -> Dict[str, str]:
     """Queue the task for each endpoint and return mapping of agent_id -> task_id."""
     assignments: Dict[str, str] = {}
@@ -266,7 +294,7 @@ def dispatch_tasks(
             )
 
         try:
-            response = post_task(url, agent_id, payload)
+            response = post_task(url, agent_id, payload, cert=cert, ca_cert=ca_cert)
         except requests.RequestException as exc:
             console.print(
                 f"[red]Failed to connect to management API for {agent_id}: {exc}[/red]"
@@ -421,6 +449,8 @@ def main(argv: List[str] | None = None) -> int:
         builder,
         url=args.url,
         print_payload=args.print_payload,
+        cert=(args.cert, args.key),
+        ca_cert=args.ca_cert,
     )
 
     if not args.no_monitor:

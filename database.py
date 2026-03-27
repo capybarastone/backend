@@ -52,9 +52,10 @@ class EndpointDatabase:
     }
 
     def __init__(self):
-        self.base_path = "data/"
-        if not os.path.exists(self.base_path):
-            os.makedirs(self.base_path, exist_ok=True)
+        self.base_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data"
+        )
+        os.makedirs(self.base_path, exist_ok=True)
 
     def _path_for_id(self, endpoint_id):
         """Returns the canonical TOML file path for a given endpoint ID."""
@@ -149,6 +150,38 @@ class EndpointDatabase:
             info["tasks"] = []
 
         self.save_endpoint(agent_id, info)
+        return True
+
+    def get_cert_fingerprint(self, agent_id):
+        """Returns the stored SHA-256 cert fingerprint for an endpoint, or None."""
+        data = self.get_endpoint(agent_id)
+        if data is None:
+            return None
+        return data.get("cert_fingerprint")
+
+    def set_cert_fingerprint(self, agent_id, fingerprint):
+        """Stores the SHA-256 cert fingerprint for an endpoint."""
+        data = self.get_endpoint(agent_id)
+        if data is None:
+            return False
+        data["cert_fingerprint"] = fingerprint
+        self.save_endpoint(agent_id, data)
+        return True
+
+    def is_blacklisted(self, agent_id):
+        """Returns True if the endpoint is blacklisted."""
+        data = self.get_endpoint(agent_id)
+        if data is None:
+            return False
+        return bool(data.get("blacklisted", False))
+
+    def blacklist_endpoint(self, agent_id):
+        """Marks an endpoint as blacklisted."""
+        data = self.get_endpoint(agent_id)
+        if data is None:
+            return False
+        data["blacklisted"] = True
+        self.save_endpoint(agent_id, data)
         return True
 
     def add_task(self, endpoint_id, task):

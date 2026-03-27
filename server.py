@@ -2,17 +2,302 @@
 Backend flask app for handling endpoint check-ins and task results.
 """
 
-from flask import request
+# standard library
+import datetime
+import hashlib
+import ipaddress
+import logging
+import os
+import ssl
+import threading
+
+# pypi
 from apiflask import APIFlask, Schema
 from apiflask.fields import String, Integer, Boolean, Dict, Raw
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+from flask import Flask as PlainFlask
+from flask import jsonify, request
 from marshmallow import INCLUDE
+from werkzeug.serving import WSGIRequestHandler, make_server
 
 from database import EndpointDatabase, generate_endpoint_id
 from util import get_current_timestamp, primitive_log
 
-app = APIFlask(__name__)
+log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Cert paths
+# ---------------------------------------------------------------------------
+CERTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "certs")
+CA_CERT_PATH = os.path.join(CERTS_DIR, "ca.crt")
+CA_KEY_PATH = os.path.join(CERTS_DIR, "ca.key")
+SERVER_CERT_PATH = os.path.join(CERTS_DIR, "server.crt")
+SERVER_KEY_PATH = os.path.join(CERTS_DIR, "server.key")
+OPERATOR_CERT_PATH = os.path.join(CERTS_DIR, "operator.crt")
+OPERATOR_KEY_PATH = os.path.join(CERTS_DIR, "operator.key")
+
+# Populated at startup by ensure_ca_exists()
+_ca_cert = None
+_ca_key = None
+
+# ---------------------------------------------------------------------------
+# Cert utilities
+# ---------------------------------------------------------------------------
+
+
+def _pem_write(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def ensure_ca_exists():
+    """Load or create the CA cert/key pair. Returns (ca_cert, ca_key)."""
+    if os.path.exists(CA_CERT_PATH) and os.path.exists(CA_KEY_PATH):
+        with open(CA_KEY_PATH, "rb") as f:
+            ca_key = serialization.load_pem_private_key(f.read(), password=None)
+        with open(CA_CERT_PATH, "rb") as f:
+            ca_cert = x509.load_pem_x509_certificate(f.read())
+        log.info("Loaded existing CA from %s", CA_CERT_PATH)
+        return ca_cert, ca_key
+
+    log.info("Generating new CA cert/key...")
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "RMM-CA")])
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650)
+        )
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    _pem_write(
+        CA_KEY_PATH,
+        ca_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ),
+    )
+    _pem_write(CA_CERT_PATH, ca_cert.public_bytes(serialization.Encoding.PEM))
+    log.info("CA written to %s", CERTS_DIR)
+    return ca_cert, ca_key
+
+
+def ensure_server_cert_exists(ca_cert, ca_key):
+    """Create the server cert signed by our CA if it doesn't already exist."""
+    if os.path.exists(SERVER_CERT_PATH) and os.path.exists(SERVER_KEY_PATH):
+        return
+
+    log.info("Generating server cert/key...")
+    server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    server_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "rmm-server")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(server_name)
+        .issuer_name(ca_cert.subject)
+        .public_key(server_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
+        )
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(server_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectAlternativeName(
+                [
+                    x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+                    x509.DNSName("localhost"),
+                ]
+            ),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    _pem_write(
+        SERVER_KEY_PATH,
+        server_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ),
+    )
+    _pem_write(SERVER_CERT_PATH, cert.public_bytes(serialization.Encoding.PEM))
+    log.info("Server cert written to %s", CERTS_DIR)
+
+
+def ensure_operator_cert_exists(ca_cert, ca_key):
+    """Create a long-lived operator cert for the management TUI if absent."""
+    if os.path.exists(OPERATOR_CERT_PATH) and os.path.exists(OPERATOR_KEY_PATH):
+        return
+
+    log.info("Generating operator cert/key for TUI...")
+    op_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "rmm-operator")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(op_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
+        )
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(op_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    _pem_write(
+        OPERATOR_KEY_PATH,
+        op_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ),
+    )
+    _pem_write(OPERATOR_CERT_PATH, cert.public_bytes(serialization.Encoding.PEM))
+    log.info(
+        "Operator cert written to %s and %s", OPERATOR_CERT_PATH, OPERATOR_KEY_PATH
+    )
+
+
+def generate_client_cert(agent_id, ca_cert, ca_key):
+    """Generate a client cert with CN=agent_id signed by the CA."""
+    client_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, agent_id)])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(client_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
+        )
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(client_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    return cert, client_key
+
+
+def cert_fingerprint(cert_der: bytes) -> str:
+    """SHA-256 fingerprint of a DER-encoded certificate."""
+    return hashlib.sha256(cert_der).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Custom request handler — injects the peer cert DER into the WSGI environ
+# ---------------------------------------------------------------------------
+
+
+class MTLSRequestHandler(WSGIRequestHandler):
+    def make_environ(self):
+        environ = super().make_environ()
+        if isinstance(self.connection, ssl.SSLSocket):
+            peer_der = self.connection.getpeercert(binary_form=True)
+            if peer_der:
+                environ["SSL_CLIENT_CERT_DER"] = peer_der
+        return environ
+
+
+# ---------------------------------------------------------------------------
+# Main app (mTLS, port 8443)
+# ---------------------------------------------------------------------------
+
+app = APIFlask(__name__)
 db = EndpointDatabase()
+
+
+@app.before_request
+def verify_client_cert():
+    """Enforce cert-pinning on all agent-facing endpoints."""
+    if not request.path.startswith("/api/end/"):
+        return
+
+    cert_der = request.environ.get("SSL_CLIENT_CERT_DER")
+    if not cert_der:
+        return jsonify({"error": "client certificate required"}), 401
+
+    try:
+        cert = x509.load_der_x509_certificate(cert_der)
+        cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if not cn_attrs:
+            return jsonify({"error": "certificate missing CN"}), 401
+        agent_id = cn_attrs[0].value
+    except Exception:
+        return jsonify({"error": "invalid certificate"}), 401
+
+    if db.is_blacklisted(agent_id):
+        return jsonify({"error": "agent blacklisted"}), 403
+
+    stored_fp = db.get_cert_fingerprint(agent_id)
+    if stored_fp is None:
+        return jsonify({"error": "agent not enrolled"}), 401
+
+    presented_fp = cert_fingerprint(cert_der)
+    if presented_fp != stored_fp:
+        db.blacklist_endpoint(agent_id)
+        log.warning("Cert mismatch for agent %s — blacklisted", agent_id)
+        return jsonify({"error": "certificate mismatch — agent blacklisted"}), 403
 
 
 class CheckinQuerySchema(Schema):
@@ -195,7 +480,6 @@ def register_endpoint(json_data):
                 and existing_data.get("ip_address") == remote_addr
             ):
                 agent_id = existing_id
-                # Preserve existing record but refresh metadata.
                 existing_data.update(
                     {key: value for key, value in payload.items() if key != "tasks"}
                 )
@@ -241,5 +525,109 @@ def post_task(json_data):
     return {"status": "success"}, 200
 
 
+# END MANAGEMENT ROUTES
+
+
+# ---------------------------------------------------------------------------
+# Enrollment app (plain HTTP, port 8080)
+# ---------------------------------------------------------------------------
+
+enroll_app = PlainFlask(__name__ + ".enroll")
+
+
+@enroll_app.post("/api/enroll")
+def enroll():
+    """
+    One-shot unauthenticated endpoint.  Issues a CA-signed client cert and
+    registers the agent.  Subsequent communication must use mTLS with this cert.
+    """
+    data = request.get_json(force=True) or {}
+    hostname = data.get("hostname", "unknown")
+    ip_address = request.remote_addr
+    now = get_current_timestamp()
+
+    # Reject if this host is already enrolled (same hostname + IP with a stored cert).
+    for existing_id in db.list_endpoints():
+        existing_data = db.get_endpoint(existing_id)
+        if not existing_data:
+            continue
+        if (
+            existing_data.get("hostname") == hostname
+            and existing_data.get("ip_address") == ip_address
+            and existing_data.get("cert_fingerprint")
+        ):
+            return jsonify({"error": "already enrolled, use existing cert"}), 409
+
+    agent_id = generate_endpoint_id()
+    client_cert, client_key = generate_client_cert(agent_id, _ca_cert, _ca_key)
+
+    cert_der = client_cert.public_bytes(serialization.Encoding.DER)
+    fingerprint = cert_fingerprint(cert_der)
+
+    payload = {
+        "hostname": hostname,
+        "os": data.get("os", "unknown"),
+        "os_name": data.get("os_name", "unknown"),
+        "ip_address": ip_address,
+        "registered_at": now,
+        "last_seen": now,
+        "cert_fingerprint": fingerprint,
+        "blacklisted": False,
+        "tasks": [],
+    }
+    db.save_endpoint(agent_id, payload)
+    log.info("Enrolled new agent %s (%s @ %s)", agent_id, hostname, ip_address)
+
+    cert_pem = client_cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = client_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ).decode()
+    with open(CA_CERT_PATH, "r") as f:
+        ca_cert_pem = f.read()
+
+    return (
+        jsonify(
+            {
+                "agent_id": agent_id,
+                "cert_pem": cert_pem,
+                "key_pem": key_pem,
+                "ca_cert_pem": ca_cert_pem,
+            }
+        ),
+        200,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8443, debug=True)
+    logging.basicConfig(level=logging.INFO)
+
+    _ca_cert, _ca_key = ensure_ca_exists()
+    ensure_server_cert_exists(_ca_cert, _ca_key)
+    ensure_operator_cert_exists(_ca_cert, _ca_key)
+
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_ctx.load_cert_chain(SERVER_CERT_PATH, SERVER_KEY_PATH)
+    ssl_ctx.verify_mode = ssl.CERT_REQUIRED
+    ssl_ctx.load_verify_locations(CA_CERT_PATH)
+
+    # Enrollment server — plain HTTP, daemon thread
+    enroll_server = make_server("0.0.0.0", 8080, enroll_app)
+    threading.Thread(target=enroll_server.serve_forever, daemon=True).start()
+    log.info("Enrollment server listening on http://0.0.0.0:8080")
+
+    # mTLS server — blocking main thread
+    mtls_server = make_server(
+        "0.0.0.0",
+        8443,
+        app,
+        ssl_context=ssl_ctx,
+        request_handler=MTLSRequestHandler,
+    )
+    log.info("mTLS server listening on https://0.0.0.0:8443")
+    mtls_server.serve_forever()
