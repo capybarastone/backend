@@ -15,6 +15,9 @@ import uuid
 
 # pypi
 import toml
+from dotenv import load_dotenv
+
+load_dotenv()
 from apiflask import APIFlask, Schema
 from apiflask.fields import String, Integer, Boolean, Dict, Raw
 from cryptography import x509
