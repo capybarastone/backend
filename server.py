@@ -619,6 +619,17 @@ def register_endpoint(json_data):
 
 
 # START MANAGEMENT ROUTES
+@app.before_request
+def _restrict_management_to_loopback():
+    if request.path.startswith("/api/man"):
+        try:
+            addr = ipaddress.ip_address(request.remote_addr)
+        except ValueError:
+            return "forbidden", 403
+        if not addr.is_loopback:
+            return "forbidden", 403
+
+
 @app.post("/api/man/post_task")
 @app.input(PostTaskSchema)
 @app.output(StatusSchema, status_code=200, description="Task acceptance confirmation.")
