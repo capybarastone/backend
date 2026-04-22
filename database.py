@@ -95,10 +95,12 @@ class EndpointDatabase:
         all_files = os.listdir(self.base_path)
         endpoints = []
         for filename in all_files:
-            if filename.endswith(".toml"):
-                endpoints.append(filename[:-5])
-            else:
-                endpoints.append(filename)
+            stem = filename[:-5] if filename.endswith(".toml") else filename
+            try:
+                uuid.UUID(stem)
+            except ValueError:
+                continue
+            endpoints.append(stem)
         return endpoints
 
     def get_endpoint(self, endpoint_id):
