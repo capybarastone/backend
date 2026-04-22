@@ -638,6 +638,9 @@ def post_task(json_data):
     agent_id = json_data["agentid"]
     task_payload = json_data["task"]
 
+    # TODO: maintain a canonical list of valid instructions and return 400 for unknown ones.
+    # Should mirror the cases in endpoint/task_utils.go: syscall, exit, inventory, install_av, av_scan.
+
     endpoint = db.get_endpoint(agent_id)
     if endpoint is None:
         return "unknown agentid", 404
