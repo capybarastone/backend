@@ -119,7 +119,9 @@ class EndpointDatabase:
             try:
                 data = toml.load(f)
             except toml.TomlDecodeError:
-                print(f"Warning: Failed to parse TOML for endpoint {endpoint_id} at {path}")
+                print(
+                    f"Warning: Failed to parse TOML for endpoint {endpoint_id} at {path}"
+                )
                 return None
 
         # Normalize task objects so downstream callers always get the expected schema.
